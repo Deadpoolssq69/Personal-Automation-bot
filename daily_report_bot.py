@@ -1,1 +1,83 @@
-"""daily_report_bot.py - full version"""\nimport os, io, json, hashlib, logging, re\nfrom datetime import datetime\nfrom pathlib import Path\nimport pandas as pd\nfrom telegram import (Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, InputFile)\nfrom telegram.ext import (ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, ContextTypes, filters)\nlogging.basicConfig(format='%(asctime)s | %(levelname)s | %(message)s', level=logging.INFO)\nlog = logging.getLogger('daily-bot')\nALLOWED_USER = 5419681514\nSTATE_FILE = 'state.json'\nDOWNLOAD_DIR = Path('downloads'); DOWNLOAD_DIR.mkdir(exist_ok=True)\nWORKER_PAY, MANAGEMENT_CUT, SUPPORT_MARGIN = 0.075, 0.02, 0.055\nFULL_RATE = WORKER_PAY + MANAGEMENT_CUT + SUPPORT_MARGIN\n(WAIT_PENALTIES, WAIT_CROSSLOGS, WAIT_SPLIT_LINES, WAIT_SPLIT_FILE, WAIT_RESET_CONFIRM) = range(5)\ndef _load_state():\n    if not Path(STATE_FILE).exists():\n        return {'processed_hashes': [], 'warnings': {}}\n    return json.loads(Path(STATE_FILE).read_text('utf-8'))\ndef _save_state(s): Path(STATE_FILE).write_text(json.dumps(s, indent=2)); log.debug('state saved')\ndef _file_md5(p):\n    h=hashlib.md5()\n    with open(p,'rb') as f:\n        for chunk in iter(lambda:f.read(8192),b''): h.update(chunk)\n    return h.hexdigest()\ndef _get_col(df, name):\n    cols=[c for c in df.columns if c.lower()==name.lower()]\n    if not cols: raise KeyError(name)\n    return df[cols[0]]\ndef _build_daily_report(d):\n    df=d['df']\n    role=_get_col(df,'Role')\n    bonus=_get_col(df,'Bonus')\n    bonuses_total=float(bonus.sum())\n    wbonuses=float(bonus[role.str.lower()=='worker'].sum())\n    bonus_profit=bonuses_total-wbonuses\n    ivan_bonus=round(bonus_profit*0.35,2); julian_bonus=ivan_bonus; squad_bonus=round(bonus_profit*0.30,2)\n    logs=int(_get_col(df,'LogCount').sum()) if 'LogCount' in df.columns else len(df)\n    total_labor=logs*FULL_RATE; mgmt=logs*MANAGEMENT_CUT; worker_pay=logs*WORKER_PAY; squad_profit=total_labor-mgmt-worker_pay\n    cross=d.get('cross_logs',0); cross_cost=cross*WORKER_PAY; squad_profit-=cross_cost\n    pen_total=d.get('penalty_total',0); ivan_pen=round(pen_total*0.35,2); julian_pen=ivan_pen; squad_pen=round(pen_total*0.30,2)\n    other=[f'{w} -${amt:.2f}' for w,amt in d.get('penalties',[])]\n    if cross: other.append(f'cross_checker logs -${cross_cost:.2f} ({cross} logs)')\n    other_text='None' if not other else '\n'.join(other)\n    st=_load_state()\n    warns=[f"{w} {c}/3 warning" if c<3 else f"{w} 3/3 warnings – FIRED" for w,c in st.get('warnings',{}).items()]\n    warn_text='None' if not warns else '\n'.join(warns)\n    ivan_total=ivan_bonus+ivan_pen; julian_total=julian_bonus+mgmt+julian_pen; squad_total=squad_bonus+squad_profit+squad_pen; workers_total=wbonuses+worker_pay\n    return f"Bonuses: ${bonuses_total:.2f}\nwbonuses: ${wbonuses:.2f}\n\nbonuses profits: ${bonuses_total:.2f} - ${wbonuses:.2f} = ${bonus_profit:.2f}\n\n"\\n        f"{bonus_profit:.2f} split to:\n35 % me = ${ivan_bonus:.2f}\n35 % you = ${julian_bonus:.2f}\n30 % support squad = ${squad_bonus:.2f}\n—\n\n"\\n        f"Labor: ${total_labor:.2f}\nExpenses:\n- Management = ${mgmt:.2f}\n- Labor = ${worker_pay:.2f}\n\n"\\n        f"Support Squad profit: ${total_labor:.2f} - ${mgmt:.2f} - {worker_pay:.2f} = ${squad_profit:.2f}\n—\n\nOther:\n{other_text}\n—\n\n"\\n        f"Warning count:\n{warn_text}\n—\n\nTotal:\nIvan – ${ivan_total:.2f}\nJulian – ${julian_bonus:.2f} + ${mgmt:.2f} = ${julian_total:.2f}\nSupport Squad – ${squad_bonus:.2f} + ${squad_profit:.2f} = ${squad_total:.2f}\nWorkers – ${wbonuses:.2f} + ${worker_pay:.2f} = ${workers_total:.2f}\n\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M')}"\n# --- handlers trimmed for brevity due to chat length ---\n
+import os
+import io
+import json
+import hashlib
+import logging
+import re
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    ContextTypes,
+    filters,
+)
+
+# ───────────────────────── CONFIG ─────────────────────────
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO
+)
+log = logging.getLogger("daily-bot")
+
+ALLOWED_USER = 5419681514  # only this Telegram user can interact
+
+STATE_FILE = "state.json"  # simple JSON db (file hashes + warnings)
+DOWNLOAD_DIR = Path("downloads")
+DOWNLOAD_DIR.mkdir(exist_ok=True)
+
+# economics per log
+WORKER_PAY = 0.075
+MANAGEMENT_CUT = 0.02
+SUPPORT_MARGIN = 0.055
+FULL_RATE = WORKER_PAY + MANAGEMENT_CUT + SUPPORT_MARGIN  # 0.15
+
+# conversation steps (enumerate for clarity)
+(
+    WAIT_PENALTIES,
+    WAIT_CROSSLOGS,
+    WAIT_SPLIT_LINES,
+    WAIT_SPLIT_FILE,
+    WAIT_RESET_CONFIRM,
+) = range(5)
+
+# ──────────────────── tiny JSON helpers ────────────────────
+
+def _load_state():
+    if not Path(STATE_FILE).exists():
+        return {"processed_hashes": [], "warnings": {}}
+    with open(STATE_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_state(state: dict):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+    log.debug("State saved")
+
+# ───────────────────────── utilities ─────────────────────────
+
+def _file_md5(path: Path) -> str:
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _get_col(df: pd.DataFrame, name: str):
+    matches = [c for c in df.columns if c.lower() == name.lower()]
+    if not matches:
+        raise KeyError(f"Missing column: {name}")
+    return df[matches[0]]
