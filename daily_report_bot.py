@@ -92,7 +92,7 @@ async def reset_btn(u:Update,c:ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # receive xlsx
-async def xlsx_doc(u: Update, c: ContextTypes.DEFAULT_TYPE):
+aasync def xlsx_doc(u:Update,c:ContextTypes.DEFAULT_TYPE):
     if u.effective_user.id!=ALLOWED_USER: return
     doc=u.message.document
     if not doc.file_name.lower().endswith(".xlsx"): return
@@ -130,16 +130,42 @@ async def split_file(u:Update,c:ContextTypes.DEFAULT_TYPE):
     await u.message.reply_text("Split done:\n"+"\n".join(summary))
     return ConversationHandler.END
 
-async def main():
-    token=os.getenv("BOT_TOKEN"); app=ApplicationBuilder().token(token).build()
-    app.add_handler(CommandHandler("start",cmd_start))
-    app.add_handler(CommandHandler("split",split_cmd))
-    app.add_handler(CommandHandler("resetdb",reset_cmd))
+def main():
+    token=os.getenv("BOT_TOKEN")
+    if not token:
+        raise RuntimeError("BOT_TOKEN env var not set")
+
+    app = ApplicationBuilder().token(token).build()
+
+    # handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("split", split_cmd))
+    app.add_handler(CommandHandler("resetdb", reset_cmd))
+
     app.add_handler(CallbackQueryHandler(reset_btn))
     app.add_handler(MessageHandler(filters.Document.ALL & filters.User(ALLOWED_USER), xlsx_doc))
-    app.add_handler(ConversationHandler(entry_points=[split_cmd], states={WAIT_LINES:[MessageHandler(filters.TEXT & filters.User(ALLOWED_USER), split_lines)], WAIT_TXT:[MessageHandler(filters.Document.ALL & filters.User(ALLOWED_USER), split_file)]}, fallbacks=[]))
-    app.add_handler(ConversationHandler(entry_points=[reset_cmd], states={WAIT_RESET:[CallbackQueryHandler(reset_btn)]}, fallbacks=[]))
-    log.info("✅ Polling started"); await app.run_polling()
+
+    # split conversation
+    split_conv = ConversationHandler(
+        entry_points=[split_cmd],
+        states={
+            WAIT_LINES: [MessageHandler(filters.TEXT & filters.User(ALLOWED_USER), split_lines)],
+            WAIT_TXT:   [MessageHandler(filters.Document.ALL & filters.User(ALLOWED_USER), split_file)],
+        },
+        fallbacks=[],
+    )
+    app.add_handler(split_conv)
+
+    # reset conversation
+    reset_conv = ConversationHandler(
+        entry_points=[reset_cmd],
+        states={WAIT_RESET:[CallbackQueryHandler(reset_btn)]},
+        fallbacks=[],
+    )
+    app.add_handler(reset_conv)
+
+    log.info("✅ Polling started")
+    app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio; asyncio.run(main())
+    main()
