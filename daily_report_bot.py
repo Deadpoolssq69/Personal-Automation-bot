@@ -92,7 +92,7 @@ async def reset_btn(u:Update,c:ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # receive xlsx
-aasync def xlsx_doc(u:Update,c:ContextTypes.DEFAULT_TYPE):
+async def xlsx_doc(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if u.effective_user.id!=ALLOWED_USER: return
     doc=u.message.document
     if not doc.file_name.lower().endswith(".xlsx"): return
