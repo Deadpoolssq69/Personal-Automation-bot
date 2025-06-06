@@ -48,7 +48,7 @@ def build_summary(df: pd.DataFrame) -> str:
     labor_exp   = float(_col(df, "LaborExp").iloc[0])
     squad_profit = labor_total - mgmt - labor_exp
 
-    penalties_block = "* Worker_1 penalty: **- $5.00** *(⚠️ Doremon receives this)*"
+    penalties_block = "* Worker_1 penalty: **- $5.00** *⚠️ Doremon receives this)*"
     cross_name, cross_amt = "Doremon", 5.00
 
     return f"""
